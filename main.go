@@ -19,7 +19,35 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
+
+	"database/sql"
+	"fmt"
+	_ "github.com/lib/pq"
+	"net/http"
+	"net/url"
+	"strings"
 )
+
+var (
+	db      *sql.DB
+	connStr string
+	err     error
+)
+
+func initializeDatabase() {
+	// Replace the following placeholders with the appropriate values
+	yourUser := "your_user"
+	yourPassword := "your_password"
+	yourDB := "your_db"
+	yourHost := "your_host"
+	sslMode := "disable"
+
+	connStr = fmt.Sprintf("user=%s password=%s dbname=%s host=%s sslmode=%s", yourUser, yourPassword, yourDB, yourHost, sslMode)
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		panic(err)
+	}
+}
 
 type MyClient struct {
 	WAClient       *whatsmeow.Client
@@ -42,18 +70,41 @@ func (mycli *MyClient) eventHandler(evt interface{}) {
 		// Make a http request to localhost:5001/chat?q= with the message, and send the response
 		// URL encode the message
 		urlEncoded := url.QueryEscape(msg)
-		url := "http://localhost:5001/chat?q=" + urlEncoded
-		// Make the request
-		resp, err := http.Get(url)
+		user := v.Info.Sender.User
+
+		// Query the database with the user and check the hasAccess field
+		var hasAccess bool
+		var notFound bool
+		query := `SELECT hasAccess FROM your_table_name WHERE number = $1`
+		err = db.QueryRow(query, user).Scan(&hasAccess)
 		if err != nil {
-			fmt.Println("Error making request:", err)
-			return
+			if err == sql.ErrNoRows {
+				fmt.Println("User not found in database")
+				notFound = true
+			} else {
+				fmt.Println("Error querying user in database:", err)
+				return
+			}
 		}
-		// Read the response
-		buf := new(bytes.Buffer)
-		buf.ReadFrom(resp.Body)
-		newMsg := buf.String()
-		// encode out as a string
+
+		var newMsg string
+		if !hasAccess || notFound {
+			fmt.Println("User does not have access")
+			newMsg = "User does not have access"
+		} else {
+			url := "http://localhost:5001/chat?q=" + urlEncoded + "&user=" + url.QueryEscape(user)
+			// Make the request
+			resp, err := http.Get(url)
+			if err != nil {
+				fmt.Println("Error making request:", err)
+				return
+			}
+			// Read the response
+			buf := new(bytes.Buffer)
+			buf.ReadFrom(resp.Body)
+			newMsg = buf.String()
+		}
+
 		response := &waProto.Message{Conversation: proto.String(string(newMsg))}
 		fmt.Println("Response:", response)
 
@@ -64,6 +115,7 @@ func (mycli *MyClient) eventHandler(evt interface{}) {
 }
 
 func main() {
+	initializeDatabase()
 	dbLog := waLog.Stdout("Database", "DEBUG", true)
 	// Make sure you add appropriate DB connector imports, e.g. github.com/mattn/go-sqlite3 for SQLite
 	container, err := sqlstore.New("sqlite3", "file:examplestore.db?_foreign_keys=on", dbLog)
